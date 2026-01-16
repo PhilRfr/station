@@ -1,13 +1,14 @@
 import argparse
 import json
 import os
-import secrets
 import sqlite3
 import sys
 import tarfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
+import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "1"
@@ -456,8 +457,7 @@ def keys_show(args: argparse.Namespace) -> None:
 def keys_regen(args: argparse.Namespace) -> None:
     paths = resolve_paths(args)
     ensure_initialized(paths)
-    private_key = secrets.token_hex(32)
-    public_key = secrets.token_hex(16)
+    private_key, public_key = generate_rathole_keys()
     name = args.comment or f"key-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
     conn = connect(paths.db)
     try:
@@ -471,6 +471,32 @@ def keys_regen(args: argparse.Namespace) -> None:
     finally:
         conn.close()
     emit("Clé régénérée.", args)
+
+
+def generate_rathole_keys() -> Tuple[str, str]:
+    command = ["docker", "run", "-it", "--rm", "rapiz1/rathole", "--genkey"]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    if result.returncode != 0:
+        raise StationError(
+            "Échec de génération des clés via rathole. "
+            f"Commande: {' '.join(command)}\n{output.strip()}",
+            STATUS_RUNTIME,
+        )
+    private_key = _extract_rathole_key(output, "private")
+    public_key = _extract_rathole_key(output, "public")
+    if not private_key or not public_key:
+        raise StationError(
+            "Impossible d'extraire les clés depuis la sortie de rathole.",
+            STATUS_RUNTIME,
+        )
+    return private_key, public_key
+
+
+def _extract_rathole_key(output: str, key_type: str) -> Optional[str]:
+    pattern = re.compile(rf"{key_type}\\s+key\\s*[:=]\\s*(\\S+)", re.IGNORECASE)
+    match = pattern.search(output)
+    return match.group(1) if match else None
 
 
 def keys_activate(args: argparse.Namespace) -> None:
